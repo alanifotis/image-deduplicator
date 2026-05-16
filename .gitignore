@@ -58,3 +58,8 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Tests
+test.c
+test
+
