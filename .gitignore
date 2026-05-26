@@ -11,6 +11,7 @@
 *.ko
 *.obj
 *.elf
+*c.swp
 
 # Linker output
 *.ilk
