@@ -280,7 +280,7 @@ int matrix_neighbor_check(uint64_t *hashes_a, uint64_t *hashes_b) {
 
                 uint64_t result = hamming_distance(hashes_a[i], hashes_b[index]);
 
-                printf("The result for i = %d is: %ul\n", i, result);
+                printf("The result for i = %zu is: %lu\n", i, result);
 
                 if (result <= 15) {
                     votes++;
