@@ -60,6 +60,9 @@ dkms.conf
 # debug information files
 *.dwo
 
+# Text files.
+*.txt
+
 # Tests
 test.c
 test

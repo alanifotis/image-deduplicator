@@ -4,6 +4,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
+#include <assert.h>
+
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "./stb_image.h"
@@ -11,18 +13,41 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "./stb_image_write.h"
 
-#define IMAGE_PATH "./fk.jpg"
-#define OUTPUT_PATH "./test.jpg"
 #define R_C(r) ((r) * 0.299)
-#define BLOCK_SIZE  32
-#define RESIZE_SIZE 96
 #define G_C(g) ((g) * 0.587)
 #define B_C(b) ((b) * 0.114)
-#define IMAGE_2 "./me_s.jpg"
-#define IMAGE_1 "./me.jpg"
+#define BLOCK_SIZE  32
+#define RESIZE_SIZE 96
+#define THRESHOLD 20
 
+// all credits to @tsoding aka. the C dynamic array guy.
+// https://github.com/tsoding/nob.h/blob/main/nob.h
+#define DECLTYPE_CAST(T)
+#define REALLOC realloc
+#define FREE free
+#define DA_INIT_CAP 256
+#define ASSERT assert
 
+#define da_append(da, item) \
+    do { \
+        da_reserve((da), (da)->count + 1); \
+        (da)->items[(da)->count++] = (item); \
+    } while (0)
 
+#define da_reserve(da, expected_capacity) \
+    do { \
+        if ((expected_capacity) > (da)->capacity) { \
+            if ((da)->capacity == 0) { \
+                (da)->capacity = DA_INIT_CAP; \
+            } \
+            while ((expected_capacity) > (da)->capacity) { \
+                (da)->capacity *= 2; \
+            } \
+            (da)->items = DECLTYPE_CAST((da)->items)REALLOC((da)->items, (da)->capacity * sizeof(*(da)->items)); \
+            ASSERT((da)->items != NULL && "Buy more RAM lol"); \
+        } \
+    } while (0)
+// End credits.
 
 typedef struct {
     char *image_path;
@@ -32,6 +57,18 @@ typedef struct {
     unsigned char *pixel_data;
 } Image;
 
+typedef struct {
+    uint32_t x;
+    uint32_t y;
+    uint32_t pixel_index;
+} Keypoint;
+
+typedef struct {
+    Keypoint *items;
+    size_t count;
+    size_t capacity;
+} Keypoints;
+
 int matrix_neighbor_check(uint64_t *hashes_a, uint64_t *hashes_b);
 void resize_32(Image *image, uint64_t *hashes);
 void resize_image(Image *image);
@@ -39,6 +76,7 @@ int hamming_distance(uint64_t hash1, uint64_t hash2);
 void gray_scale_image(Image *image);
 uint64_t calculate_dct(Image *image);
 char *name_extension(char *filename, char *ext);
+void orb_faster(Image *image);
 
 int main(int argc, char **argv) {
 
@@ -47,47 +85,34 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    Image image = {0};
-    image.image_path = IMAGE_PATH;
+    Image image_1 = {0};
+    image_1.image_path = argv[1];
+    Image image_2    = {0};
+    image_2.image_path = argv[2];
 
-    image.pixel_data = stbi_load(IMAGE_PATH, &image.width, &image.height, &image.channels, 3);
-
-    if (image.pixel_data == NULL) {
-        fprintf(stderr,"Error: Unable to load %s\n", IMAGE_PATH);
-        return 1;
-    }
-
-    Image london = {0};
-    london.image_path = argv[1];
-    Image ssh    = {0};
-    ssh.image_path = argv[2];
-
-    london.pixel_data = stbi_load(london.image_path, &london.width, &london.height, &london.channels, 3);
-    london.channels = 3;
-    ssh.pixel_data = stbi_load(ssh.image_path, &ssh.width, &ssh.height, &ssh.channels, 3);
-    ssh.channels = 3;
-    gray_scale_image(&image);
-    gray_scale_image(&london);
-    gray_scale_image(&ssh);
-    resize_image(&image); 
-    resize_image(&london); 
-    resize_image(&ssh);
-    uint64_t london_hashes[9] = {0};
-    resize_32(&london, london_hashes);
-    uint64_t hash_l = calculate_dct(&london); 
-    uint64_t ssh_hashes[9] = {0};
-    resize_32(&ssh, ssh_hashes);
-    uint64_t hash_s = calculate_dct(&ssh);
+    image_1.pixel_data = stbi_load(image_1.image_path, &image_1.width, &image_1.height, &image_1.channels, 3);
+    image_1.channels = 3;
+    image_2.pixel_data = stbi_load(image_2.image_path, &image_2.width, &image_2.height, &image_2.channels, 3);
+    image_2.channels = 3;
+    gray_scale_image(&image_1);
+    orb_faster(&image_1);
+    gray_scale_image(&image_2);
+    resize_image(&image_1); 
+    resize_image(&image_2);
+    uint64_t image_1_hashes[9] = {0};
+    resize_32(&image_1, image_1_hashes);
+    uint64_t hash_l = calculate_dct(&image_1); 
+    uint64_t image_2_hashes[9] = {0};
+    resize_32(&image_2, image_2_hashes);
+    uint64_t hash_s = calculate_dct(&image_2);
     int distance = hamming_distance(hash_l, hash_s);
-    printf("Hash london = %lu\nHash Screenshot = %lu\nand the Distance = %d\n", hash_l, hash_s, distance); 
-    int matrix = matrix_neighbor_check(london_hashes, ssh_hashes);
-
+    printf("Hash image_1 = %lu\nHash Screenshot = %lu\nand the Distance = %d\n", hash_l, hash_s, distance); 
+    int matrix = matrix_neighbor_check(image_1_hashes, image_2_hashes);
 
     printf("\x1b[1;32mFinal matrix result = %d\x1b[0m\n", matrix); 
 
-    stbi_image_free(image.pixel_data);
-    stbi_image_free(london.pixel_data);
-    stbi_image_free(ssh.pixel_data);
+    stbi_image_free(image_1.pixel_data);
+    stbi_image_free(image_2.pixel_data);
     return 0;
 }
 
@@ -293,4 +318,93 @@ int matrix_neighbor_check(uint64_t *hashes_a, uint64_t *hashes_b) {
         }
     }
     return votes;
+}
+
+void orb_faster(Image *image) {
+    static int coordinates[16][2] = {
+        { 0, -3},
+        { 1, -3},
+        { 2, -2},
+        { 3, -1},
+        { 3,  0},
+        { 3,  1},
+        { 2,  2},
+        { 1,  3},
+        { 0,  3},
+        {-1,  3},
+        {-2,  2},
+        {-3,  1},
+        {-3,  0},
+        {-3, -1},
+        {-2, -2},
+        {-1, -3},
+    };
+
+    Keypoints keypoints = {0};
+    uint32_t keys = 0;
+    for (size_t y = 3; y < image->height - 3; ++y) {
+        for (size_t x = 3; x < image->width - 3; ++x) {
+            int p_i = (y * image->width + x) * image->channels;
+            int brighter = image->pixel_data[p_i] + THRESHOLD;
+            int darker   = image->pixel_data[p_i] - THRESHOLD;
+
+            int main_indexes[4] = {
+                p_i - (3 * image->width * image->channels),
+                p_i + (3 * image->width * image->channels),
+                p_i + (3 * image->channels),
+                p_i - (3 * image->channels),
+            };
+
+            size_t d_votes = 0;
+            size_t b_votes = 0;
+
+            for (size_t i = 0; i < 4; ++i) {
+                int value = image->pixel_data[main_indexes[i]];
+                if (value < darker) d_votes++;
+                if (value > brighter) b_votes++;
+            }
+
+            if (b_votes < 3 && d_votes < 3 ) continue;
+
+            signed char votes[25] = {0};
+
+            for (int i = 0; i < 16 ; ++i) {
+                int c_p = image->pixel_data[p_i + ((coordinates[i][1] * image->width + coordinates[i][0]) * image->channels)];
+                if (c_p < darker) votes[i] = -1;
+                else if (c_p > brighter) votes[i] = 1;
+                else votes[i] = 0;
+
+            }
+
+            for (uint8_t i = 0; i < 9; ++i) {
+                votes[i + 16] = votes[i];
+            }
+
+            d_votes = 0;
+            b_votes = 0;
+
+            for (int i = 0; i < 25; i++) {
+                if (votes[i] == -1) { 
+                    d_votes++;
+                    b_votes = 0;
+                } else if (votes[i] == 1) {
+                    b_votes++;
+                    d_votes = 0;
+                } else if(!votes[i]) {
+                    d_votes = 0;
+                    b_votes = 0;
+                }
+
+                if (b_votes >= 9 || d_votes >= 9) {
+                    Keypoint k = { x, y, p_i };
+                    da_append(&keypoints, k);
+                    keys++;
+                    break;
+                }
+
+                if (b_votes + (25 - i) < 9 && d_votes + (25 - i) < 9 ) break;
+            }
+        }
+    }
+    printf("Found total of %ul keypoints \n", keys);
 }
