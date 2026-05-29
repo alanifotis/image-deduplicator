@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <assert.h>
-
+#include "./orb_pattern.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "./stb_image.h"
@@ -13,15 +13,39 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "./stb_image_write.h"
 
+
+
 #define R_C(r) ((r) * 0.299)
 #define G_C(g) ((g) * 0.587)
 #define B_C(b) ((b) * 0.114)
-#define BLOCK_SIZE  32
-#define RESIZE_SIZE 96
-#define THRESHOLD 20
+#define MATCH_THRESHOLD(x) ((x) * 0.8)
+#define BLOCK_SIZE      32
+#define RESIZE_SIZE     96
+#define THRESHOLD       20
+#define PATCH_RADIUS    15
+#define ORB_PADDING     22
 
 // all credits to @tsoding aka. the C dynamic array guy.
 // https://github.com/tsoding/nob.h/blob/main/nob.h
+/**
+ *   MIT License Copyright (c) 2024 Alexey Kutepov
+ *   ermission is hereby granted, free of charge, to any person obtaining a copy of
+ *   this software and associated documentation files (the "Software"), to deal in
+ *   the Software without restriction, including without limitation the rights to
+ *   use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+ *   of the Software, and to permit persons to whom the Software is furnished to do
+ *   so, subject to the following conditions:
+ *   The above copyright notice and this permission notice shall be included in all
+ *   copies or substantial portions of the Software.
+ *   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ *   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ *   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ *   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ *   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ *   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * 
+ * */
 #define DECLTYPE_CAST(T)
 #define REALLOC realloc
 #define FREE free
@@ -61,6 +85,8 @@ typedef struct {
     uint32_t x;
     uint32_t y;
     uint32_t pixel_index;
+    double angle;
+    uint64_t descriptor[4];
 } Keypoint;
 
 typedef struct {
@@ -69,6 +95,18 @@ typedef struct {
     size_t capacity;
 } Keypoints;
 
+typedef struct {
+    size_t   query_idx;
+    size_t   train_idx;
+    uint64_t  distance;
+} Match;
+
+typedef struct {
+    Match *items;
+    size_t count;
+    size_t capacity;
+} Matches;
+
 int matrix_neighbor_check(uint64_t *hashes_a, uint64_t *hashes_b);
 void resize_32(Image *image, uint64_t *hashes);
 void resize_image(Image *image);
@@ -76,7 +114,9 @@ int hamming_distance(uint64_t hash1, uint64_t hash2);
 void gray_scale_image(Image *image);
 uint64_t calculate_dct(Image *image);
 char *name_extension(char *filename, char *ext);
-void orb_faster(Image *image);
+Keypoints orb_faster(Image *image);
+uint64_t hamming_orb(uint64_t *hash1, uint64_t *hash2);
+Matches orb_matcher(Keypoints *k1, Keypoints *k2);
 
 int main(int argc, char **argv) {
 
@@ -118,7 +158,7 @@ int main(int argc, char **argv) {
 
 
 void gray_scale_image(Image *image) {
-    for (size_t i = 0; i < image->width * image->height; ++i) {
+    for (int i = 0; i < image->width * image->height; ++i) {
         int lum = (int) (R_C(image->pixel_data[i*3]) + G_C(image->pixel_data[i*3+1]) + B_C(image->pixel_data[i*3+2]));
         image->pixel_data[i*3]   = lum;
         image->pixel_data[i*3+1] = lum;
@@ -179,9 +219,9 @@ uint64_t calculate_dct(Image *image) {
 
             double sum = 0.0;
 
-            for(size_t y = 0; y < image->height; ++y) {
+            for(int y = 0; y < image->height; ++y) {
 
-                for(size_t x = 0; x < image->width; ++x) {
+                for(int x = 0; x < image->width; ++x) {
                     int p_i = (y * image->width + x) * image->channels;
                     int pixel = image->pixel_data[p_i];
 
@@ -316,30 +356,10 @@ int matrix_neighbor_check(uint64_t *hashes_a, uint64_t *hashes_b) {
     return votes;
 }
 
-void orb_faster(Image *image) {
-    static int coordinates[16][2] = {
-        { 0, -3},
-        { 1, -3},
-        { 2, -2},
-        { 3, -1},
-        { 3,  0},
-        { 3,  1},
-        { 2,  2},
-        { 1,  3},
-        { 0,  3},
-        {-1,  3},
-        {-2,  2},
-        {-3,  1},
-        {-3,  0},
-        {-3, -1},
-        {-2, -2},
-        {-1, -3},
-    };
-
+Keypoints orb_faster(Image *image) {
     Keypoints keypoints = {0};
-    uint32_t keys = 0;
-    for (size_t y = 3; y < image->height - 3; ++y) {
-        for (size_t x = 3; x < image->width - 3; ++x) {
+    for (int y = ORB_PADDING; y < image->height - ORB_PADDING; ++y) {
+        for (int x = ORB_PADDING; x < image->width - ORB_PADDING; ++x) {
             int p_i = (y * image->width + x) * image->channels;
             int brighter = image->pixel_data[p_i] + THRESHOLD;
             int darker   = image->pixel_data[p_i] - THRESHOLD;
@@ -392,15 +412,88 @@ void orb_faster(Image *image) {
                 }
 
                 if (b_votes >= 9 || d_votes >= 9) {
-                    Keypoint k = { x, y, p_i };
+                    Keypoint k = { x, y, p_i, 0.0, {0} };
                     da_append(&keypoints, k);
-                    keys++;
                     break;
                 }
 
                 if (b_votes + (25 - i) < 9 && d_votes + (25 - i) < 9 ) break;
             }
         }
+        return keypoints;
     }
-    printf("Found total of %u keypoints.\n", keys);
+
+    double m10 = 0.0;
+    double m01 = 0.0;
+
+    for (size_t i = 0; i < keypoints.count; ++i) {
+        m10 = 0;
+        m01 = 0;
+        for (int dy = -PATCH_RADIUS; dy <= PATCH_RADIUS; dy++) {
+            for (int dx = -PATCH_RADIUS; dx <= PATCH_RADIUS; dx++) {
+                int patch_p_i = keypoints.items[i].pixel_index + ((dy * image->width + dx) * image->channels);
+                int val = image->pixel_data[patch_p_i];
+                m10 += dx * val;
+                m01 += dy * val;
+            }
+        }
+        keypoints.items[i].angle = atan2(m01,m10);
+        double sin_theta = sin(keypoints.items[i].angle);
+        double cos_theta = cos(keypoints.items[i].angle);
+
+        for(int j = 0; j < 256; j++) {
+            int x1_r = round(bit_pattern_31_[j * 4 + 0] * cos_theta - bit_pattern_31_[j * 4 + 1] * sin_theta);
+            int x2_r = round(bit_pattern_31_[j * 4 + 2] * cos_theta - bit_pattern_31_[j * 4 + 3] * sin_theta);
+            int y1_r = round(bit_pattern_31_[j * 4 + 0] * sin_theta + bit_pattern_31_[j * 4 + 1] * cos_theta);
+            int y2_r = round(bit_pattern_31_[j * 4 + 2] * sin_theta + bit_pattern_31_[j * 4 + 3] * cos_theta);
+
+            int p1_i = keypoints.items[i].pixel_index + ((y1_r * image->width + x1_r) * image->channels);
+            int p2_i = keypoints.items[i].pixel_index + ((y2_r * image->width + x2_r) * image->channels);
+
+            if (image->pixel_data[p1_i] < image->pixel_data[p2_i]) {
+                keypoints.items[i].descriptor[j >> 6] |= (1ULL << (j & 63)); 
+            }
+        }
+    }
+}
+
+uint64_t hamming_orb(uint64_t *hash1, uint64_t *hash2) {
+    uint64_t count = 0;
+    for (int i = 0; i < 4; i++) {
+        uint64_t xor_result = hash1[i] ^ hash2[i];
+        count += __builtin_popcountll(xor_result);
+    }
+    return count;
+}
+
+Matches orb_matcher(Keypoints *k1, Keypoints *k2) {
+    Matches matches = {0};
+    uint64_t lowest_distance = 300;
+    uint64_t second_lowest_distance = 300;
+    uint64_t test_value      = 300;
+    int64_t best_j_index     =  -1;
+    for (size_t i = 0; i < k1->count; ++i) {
+        best_j_index = -1;
+        lowest_distance = 300;
+        second_lowest_distance = 300;
+        test_value = 300;
+ 
+        for (size_t j = 0; j < k2->count; ++j) {
+            test_value = hamming_orb(k1->items[i].descriptor, k2->items[j].descriptor);
+
+            if (test_value < lowest_distance) {
+                second_lowest_distance = lowest_distance;
+                lowest_distance = test_value;
+                best_j_index = j;
+            } else if (test_value < second_lowest_distance) {
+                second_lowest_distance = test_value;
+            }
+        }
+
+        if (lowest_distance < MATCH_THRESHOLD(second_lowest_distance)) {
+            Match m = { i, best_j_index, lowest_distance };
+            da_append(&matches, m);
+        }
+   }
+    return matches;
 }
