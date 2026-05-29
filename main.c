@@ -117,6 +117,8 @@ char *name_extension(char *filename, char *ext);
 Keypoints orb_faster(Image *image);
 uint64_t hamming_orb(uint64_t *hash1, uint64_t *hash2);
 Matches orb_matcher(Keypoints *k1, Keypoints *k2);
+void draw_matches(Image *img1, Image *img2, Keypoints *k1, Keypoints *k2, Matches *matches);
+void draw_line(Image *canvas, int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b);
 
 int main(int argc, char **argv) {
 
@@ -135,8 +137,16 @@ int main(int argc, char **argv) {
     image_2.pixel_data = stbi_load(image_2.image_path, &image_2.width, &image_2.height, &image_2.channels, 3);
     image_2.channels = 3;
     gray_scale_image(&image_1);
-    orb_faster(&image_1);
+    Keypoints k1 = orb_faster(&image_1);
     gray_scale_image(&image_2);
+    Keypoints k2 = orb_faster(&image_2);
+
+    Matches m = orb_matcher(&k1, &k2);
+
+    draw_matches(&image_1, &image_2, &k1, &k2, &m);
+
+    printf("ORB finished succesfully\n");
+
     resize_image(&image_1); 
     resize_image(&image_2);
     uint64_t image_1_hashes[9] = {0};
@@ -420,7 +430,6 @@ Keypoints orb_faster(Image *image) {
                 if (b_votes + (25 - i) < 9 && d_votes + (25 - i) < 9 ) break;
             }
         }
-        return keypoints;
     }
 
     double m10 = 0.0;
@@ -455,6 +464,7 @@ Keypoints orb_faster(Image *image) {
             }
         }
     }
+    return keypoints;
 }
 
 uint64_t hamming_orb(uint64_t *hash1, uint64_t *hash2) {
@@ -496,4 +506,81 @@ Matches orb_matcher(Keypoints *k1, Keypoints *k2) {
         }
    }
     return matches;
+}
+
+void draw_matches(Image *img1, Image *img2, Keypoints *k1, Keypoints *k2, Matches *matches) {
+    Image canvas = {0};
+    canvas.image_path = "canvas.png";
+    canvas.width  = img1->width + img2->width;
+    canvas.height = img1->height > img2->height ? img1->height : img2->height;
+    canvas.channels = 3;
+
+    canvas.pixel_data = calloc((canvas.height * canvas.width * canvas.channels), sizeof(unsigned char));
+
+    if (canvas.pixel_data == NULL) {
+        fprintf(stderr, "Failed to allocate memory for the image buffer\n");
+        exit(1);
+    }
+    for (int y = 0; y < img1->height; y++) {
+        for (int x = 0; x < img1->width; x++) {
+            int src    = (y * img1->width + x) * img1->channels;
+            int target = (y * canvas.width + x) * canvas.channels;
+            canvas.pixel_data[target]     = img1->pixel_data[src];
+            canvas.pixel_data[target + 1] = img1->pixel_data[src + 1];
+            canvas.pixel_data[target + 2] = img1->pixel_data[src + 2];
+            }
+    }
+    
+    for (int y = 0; y < img2->height; y++) {
+        for (int x = 0; x < img2->width; x++) {
+            int src    = (y * img2->width + x) * img2->channels;
+            int target = (y * canvas.width + (x + img1->width)) * canvas.channels;
+            canvas.pixel_data[target]     = img2->pixel_data[src];
+            canvas.pixel_data[target + 1] = img2->pixel_data[src + 1];
+            canvas.pixel_data[target + 2] = img2->pixel_data[src + 2];
+        }
+    }
+
+    for(size_t i = 0; i < matches->count; i++) {
+        int x0 = k1->items[matches->items[i].query_idx].x;
+        int y0 = k1->items[matches->items[i].query_idx].y;
+        int x1 = k2->items[matches->items[i].train_idx].x + img1->width;
+        int y1 = k2->items[matches->items[i].train_idx].y;
+        draw_line(&canvas, x0, y0, x1, y1, 0, 255, 0);
+    }
+
+    stbi_write_png(canvas.image_path, canvas.width, canvas.height, canvas.channels, canvas.pixel_data, canvas.width * canvas.channels);
+
+    free(canvas.pixel_data);
+}
+
+void draw_line(Image *canvas, int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b) {
+    int dx =  abs(x1 - x0);
+    int dy = -abs(y1 - y0);
+    int sx = x0 < x1 ? 1 : -1;
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    while(1) {
+        if (x0 >= 0 && x0 < canvas->width && y0 >= 0 && y0 < canvas->height
+        ) {
+            int target = (y0 * canvas->width + x0) * canvas->channels;
+            canvas->pixel_data[target]     = r;
+            canvas->pixel_data[target + 1] = g;
+            canvas->pixel_data[target + 2] = b;
+        }
+
+        if (x0 == x1 && y0 == y1) break;
+
+        int err2 = 2 * err;
+
+        if (err2 >= dy ) {
+            err += dy;
+            x0  += sx;
+        }
+
+        if (err2 <= dx) {
+            err += dx;
+            y0  += sy;
+        }
+    }
 }
