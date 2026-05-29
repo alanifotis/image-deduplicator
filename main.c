@@ -464,6 +464,7 @@ Keypoints orb_faster(Image *image) {
             }
         }
     }
+    printf("Keypoints = %zu\n", keypoints.count);
     return keypoints;
 }
 
@@ -505,6 +506,7 @@ Matches orb_matcher(Keypoints *k1, Keypoints *k2) {
             da_append(&matches, m);
         }
    }
+    printf("Matches = %zu\n", matches.count);
     return matches;
 }
 
