@@ -214,8 +214,6 @@ uint64_t calculate_dct(Image *image) {
         }
     }
 
-    printf("Super hash = %lu\n", hash);
-
     return hash;
 }
 
@@ -304,8 +302,6 @@ int matrix_neighbor_check(uint64_t *hashes_a, uint64_t *hashes_b) {
                 if (used[index]) continue;
 
                 uint64_t result = hamming_distance(hashes_a[i], hashes_b[index]);
-
-                printf("The result for i = %zu is: %lu\n", i, result);
 
                 if (result <= 15) {
                     votes++;
@@ -406,5 +402,5 @@ void orb_faster(Image *image) {
             }
         }
     }
-    printf("Found total of %ul keypoints \n", keys);
+    printf("Found total of %u keypoints.\n", keys);
 }
