@@ -107,18 +107,25 @@ typedef struct {
     size_t capacity;
 } Matches;
 
+typedef struct {    
+    int x;
+    int y;
+} Point;
+
 int matrix_neighbor_check(uint64_t *hashes_a, uint64_t *hashes_b);
 void resize_32(Image *image, uint64_t *hashes);
 void resize_image(Image *image);
 int hamming_distance(uint64_t hash1, uint64_t hash2);
 void gray_scale_image(Image *image);
+void is_mirrored(Image *img1, Image *img2); 
 uint64_t calculate_dct(Image *image);
 char *name_extension(char *filename, char *ext);
-Keypoints orb_faster(Image *image);
+void orb_faster(Image *image, Keypoints *keypoints);
 uint64_t hamming_orb(uint64_t *hash1, uint64_t *hash2);
-Matches orb_matcher(Keypoints *k1, Keypoints *k2);
+void orb_matcher(Keypoints *k1, Keypoints *k2, Matches *matches);
 void draw_matches(Image *img1, Image *img2, Keypoints *k1, Keypoints *k2, Matches *matches);
 void draw_line(Image *canvas, int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b);
+void project_point(int matrix[3][3], int x, int y, Point *p);
 
 int main(int argc, char **argv) {
 
@@ -137,15 +144,46 @@ int main(int argc, char **argv) {
     image_2.pixel_data = stbi_load(image_2.image_path, &image_2.width, &image_2.height, &image_2.channels, 3);
     image_2.channels = 3;
     gray_scale_image(&image_1);
-    Keypoints k1 = orb_faster(&image_1);
+    Keypoints* k1 = calloc(1, sizeof(Keypoints));
+
+    if (k1 == NULL) {
+        fprintf(stderr, "Failed to allocate memory for K1\n");
+        return 1;
+    }
+
+    orb_faster(&image_1, k1);
+
     gray_scale_image(&image_2);
-    Keypoints k2 = orb_faster(&image_2);
+    Keypoints* k2 = calloc(1, sizeof(Keypoints));
+    if (k2 == NULL) {
+    fprintf(stderr, "Failed to allocate memory for K2\n");
+        return 1;
+    }
 
-    Matches m = orb_matcher(&k1, &k2);
+    orb_faster(&image_2, k2);
+    
+    is_mirrored(&image_1, &image_2);
 
-    draw_matches(&image_1, &image_2, &k1, &k2, &m);
+    Matches* m = calloc(1, sizeof(Matches));
 
-    printf("ORB finished succesfully\n");
+    if (m == NULL) {
+    fprintf(stderr, "Failed to allocate memory for Matches\n");
+        return 1;
+    }
+
+    orb_matcher(k1, k2, m);
+
+    draw_matches(&image_1, &image_2, k1, k2, m);
+
+    printf("\x1b[1;32mORB finished succesfully\x1b[0m\n");
+
+    if (k1->items != NULL) free(k1->items);
+    if (k2->items != NULL) free(k2->items);
+    if (m->items != NULL)  free(m->items);
+
+    free(k1);
+    free(k2);
+    free(m);
 
     resize_image(&image_1); 
     resize_image(&image_2);
@@ -363,11 +401,19 @@ int matrix_neighbor_check(uint64_t *hashes_a, uint64_t *hashes_b) {
             if (matched) break;
         }
     }
+
+    if (votes <= 5) {
+        printf("\x1b[1;32mDTC(pHash) Result: Confidently a duplicate. Total matches: %d.\x1b[0m\n", votes);
+    } else if (votes > 5 && votes <= 15) {
+        printf("\x1b[1;33mDTC(pHash) Result: Likely a duplicate. Total matches: %d.\x1b[0m\n", votes);
+    } else {
+        printf("\x1b[1;31mDTC(pHash) Result: Likely distinct images (mirrored, rotated etc.). Total matches: %d.\x1b[0m\n", votes);
+    }
+
     return votes;
 }
 
-Keypoints orb_faster(Image *image) {
-    Keypoints keypoints = {0};
+void orb_faster(Image *image, Keypoints *keypoints) {
     for (int y = ORB_PADDING; y < image->height - ORB_PADDING; ++y) {
         for (int x = ORB_PADDING; x < image->width - ORB_PADDING; ++x) {
             int p_i = (y * image->width + x) * image->channels;
@@ -423,7 +469,7 @@ Keypoints orb_faster(Image *image) {
 
                 if (b_votes >= 9 || d_votes >= 9) {
                     Keypoint k = { x, y, p_i, 0.0, {0} };
-                    da_append(&keypoints, k);
+                    da_append(keypoints, k);
                     break;
                 }
 
@@ -435,20 +481,20 @@ Keypoints orb_faster(Image *image) {
     double m10 = 0.0;
     double m01 = 0.0;
 
-    for (size_t i = 0; i < keypoints.count; ++i) {
+    for (size_t i = 0; i < keypoints->count; ++i) {
         m10 = 0;
         m01 = 0;
         for (int dy = -PATCH_RADIUS; dy <= PATCH_RADIUS; dy++) {
             for (int dx = -PATCH_RADIUS; dx <= PATCH_RADIUS; dx++) {
-                int patch_p_i = keypoints.items[i].pixel_index + ((dy * image->width + dx) * image->channels);
+                int patch_p_i = keypoints->items[i].pixel_index + ((dy * image->width + dx) * image->channels);
                 int val = image->pixel_data[patch_p_i];
                 m10 += dx * val;
                 m01 += dy * val;
             }
         }
-        keypoints.items[i].angle = atan2(m01,m10);
-        double sin_theta = sin(keypoints.items[i].angle);
-        double cos_theta = cos(keypoints.items[i].angle);
+        keypoints->items[i].angle = atan2(m01,m10);
+        double sin_theta = sin(keypoints->items[i].angle);
+        double cos_theta = cos(keypoints->items[i].angle);
 
         for(int j = 0; j < 256; j++) {
             int x1_r = round(bit_pattern_31_[j * 4 + 0] * cos_theta - bit_pattern_31_[j * 4 + 1] * sin_theta);
@@ -456,16 +502,15 @@ Keypoints orb_faster(Image *image) {
             int y1_r = round(bit_pattern_31_[j * 4 + 0] * sin_theta + bit_pattern_31_[j * 4 + 1] * cos_theta);
             int y2_r = round(bit_pattern_31_[j * 4 + 2] * sin_theta + bit_pattern_31_[j * 4 + 3] * cos_theta);
 
-            int p1_i = keypoints.items[i].pixel_index + ((y1_r * image->width + x1_r) * image->channels);
-            int p2_i = keypoints.items[i].pixel_index + ((y2_r * image->width + x2_r) * image->channels);
+            int p1_i = keypoints->items[i].pixel_index + ((y1_r * image->width + x1_r) * image->channels);
+            int p2_i = keypoints->items[i].pixel_index + ((y2_r * image->width + x2_r) * image->channels);
 
             if (image->pixel_data[p1_i] < image->pixel_data[p2_i]) {
-                keypoints.items[i].descriptor[j >> 6] |= (1ULL << (j & 63)); 
+                keypoints->items[i].descriptor[j >> 6] |= (1ULL << (j & 63)); 
             }
         }
     }
-    printf("Keypoints = %zu\n", keypoints.count);
-    return keypoints;
+    printf("Keypoints = %zu\n", keypoints->count);
 }
 
 uint64_t hamming_orb(uint64_t *hash1, uint64_t *hash2) {
@@ -477,8 +522,8 @@ uint64_t hamming_orb(uint64_t *hash1, uint64_t *hash2) {
     return count;
 }
 
-Matches orb_matcher(Keypoints *k1, Keypoints *k2) {
-    Matches matches = {0};
+void orb_matcher(Keypoints *k1, Keypoints *k2, Matches *matches) {
+
     uint64_t lowest_distance = 300;
     uint64_t second_lowest_distance = 300;
     uint64_t test_value      = 300;
@@ -503,11 +548,17 @@ Matches orb_matcher(Keypoints *k1, Keypoints *k2) {
 
         if (lowest_distance < MATCH_THRESHOLD(second_lowest_distance)) {
             Match m = { i, best_j_index, lowest_distance };
-            da_append(&matches, m);
+            da_append(matches, m);
         }
    }
-    printf("Matches = %zu\n", matches.count);
-    return matches;
+
+    if (matches->count >= 500) {
+        printf("\x1b[1;32mORB Result: Confidently a duplicate. Total matches: %zu.\x1b[0m\n", matches->count);
+    } else if (matches->count < 500 && matches->count > 100) {
+        printf("\x1b[1;33mORB Result: Likely a duplicate. Total matches: %zu.\x1b[0m\n", matches->count);
+    } else {
+        printf("\x1b[1;31mORB Result: Likely distinct images (or mirrored). Total matches: %zu.\x1b[0m\n", matches->count);
+    }
 }
 
 void draw_matches(Image *img1, Image *img2, Keypoints *k1, Keypoints *k2, Matches *matches) {
@@ -585,4 +636,59 @@ void draw_line(Image *canvas, int x0, int y0, int x1, int y1, uint8_t r, uint8_t
             y0  += sy;
         }
     }
+}
+
+void is_mirrored(Image *img1, Image *img2) {
+    if (img1->width != img2->width || img1->height != img2->height) {
+        printf("\x1b[1;31mProbably not a mirrored duplicate as dimensions do not match!\x1b[0m\n");
+        return;
+    }
+
+    uint64_t errors = 0;
+
+    for (int y = 0; y < img1->height; y++) {
+        for (int x = 0; x < img1->width; x++) {
+            int i1 = (y * img1->width + x) * img1->channels;
+            int i2 = (y * img2->width + (img2->width - 1 - x)) * img2->channels;
+            errors += abs(img1->pixel_data[i1] - img2->pixel_data[i2]);
+        }
+    }
+
+    double mean_abs = (double)errors / (img1->width * img1->height);
+
+    if (mean_abs < 5.0) {
+        printf("\x1b[1;32mMirror Result: Confidently a mirrored duplicate!\x1b[0m\n");
+    } else {
+        printf("\x1b[1;32mMirror Result: Most likely not a mirror!\x1b[0m\n");
+    }
+
+    return;
+}
+
+void project_point(int matrix[3][3], int x, int y, Point *p) {
+    int new_x = (matrix[0][0] * x) + (matrix[0][1] * y) + matrix[0][2];
+    int new_y = (matrix[1][0] * x) + (matrix[1][1] * y) + matrix[1][2];
+    int w     = (matrix[2][0] * x) + (matrix[2][1] * y) + matrix[2][2];
+    p->x = (int)(new_x / w);
+    p->y = (int)(new_y / w);
+}
+
+uint32_t *unique_samples(uint32_t max_index) {
+    uint32_t* ind = calloc(4, sizeof(uint32_t));
+
+    uint8_t count = 0;
+
+
+    while(count < 4) {
+        uint32_t n = 0;
+        n += arc4random_uniform(max_index);
+        for (uint8_t i = 0; i < 4; i++) {
+            if (ind[i] != n ) {
+                ind[count] = n;
+                count++;
+            }
+        }
+    }
+
+    return ind;
 }
