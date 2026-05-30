@@ -177,9 +177,9 @@ int main(int argc, char **argv) {
 
     printf("\x1b[1;32mORB finished succesfully\x1b[0m\n");
 
-    if (k1->items != NULL) free(k1->items);
-    if (k2->items != NULL) free(k2->items);
-    if (m->items != NULL)  free(m->items);
+    free(k1->items);
+    free(k2->items);
+    free(m->items);
 
     free(k1);
     free(k2);
