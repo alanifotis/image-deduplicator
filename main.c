@@ -18,7 +18,7 @@
 #define R_C(r) ((r) * 0.299)
 #define G_C(g) ((g) * 0.587)
 #define B_C(b) ((b) * 0.114)
-#define MATCH_THRESHOLD(x) ((x) * 0.8)
+#define MATCH_THRESHOLD(x) ((x) * 0.90)
 #define BLOCK_SIZE      32
 #define RESIZE_SIZE     96
 #define THRESHOLD       20
@@ -116,8 +116,8 @@ typedef struct {
 } Matches;
 
 typedef struct {    
-	int x;
-	int y;
+	double x;
+	double y;
 } Point;
 
 int matrix_neighbor_check(uint64_t *hashes_a, uint64_t *hashes_b);
@@ -662,8 +662,8 @@ void project_point(double matrix[3][3], int x, int y, Point *p) {
     double new_y = (matrix[1][0] * (double)x) + (matrix[1][1] * (double)y) + matrix[1][2];
     double w     = (matrix[2][0] * (double)x) + (matrix[2][1] * (double)y) + matrix[2][2];
     if (w == 0) w = 1e-8;
-    p->x = (int)(new_x / w);
-    p->y = (int)(new_y / w);
+    p->x = new_x / w;
+    p->y = new_y / w;
 }
 
 void unique_samples(uint32_t indices[4], size_t max_index) {
@@ -707,7 +707,7 @@ void ransac(Matches *matches, Keypoints *k1, Keypoints *k2) {
             double t_y = (double)k2->items[matches->items[j].train_idx].y;
             Point p = {0};
             project_point(matrix, a_x, a_y, &p);
-            double distance_error = sqrt(((t_x - (double)p.x) * (t_x - (double)p.x)) + ((t_y - (double)p.y) * (t_y - (double)p.y)));
+            double distance_error = sqrt(((t_x - p.x) * (t_x - p.x)) + ((t_y - p.y) * (t_y - p.y)));
 
             if (distance_error < RANSAC_LIMIT) vote++;
         }
@@ -729,7 +729,7 @@ void ransac(Matches *matches, Keypoints *k1, Keypoints *k2) {
         Point p = {0};
         project_point(best_matrix, a_x, a_y, &p);
 
-        double error = sqrt(((t_x - (double)p.x) * (t_x - (double)p.x)) + ((t_y - (double)p.y) * (t_y - (double)p.y)));
+        double error = sqrt(((t_x - p.x) * (t_x - p.x)) + ((t_y - p.y) * (t_y - p.y)));
 
         if (error < RANSAC_LIMIT) da_append(&inliers, matches->items[j]);
     }
