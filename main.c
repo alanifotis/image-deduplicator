@@ -22,9 +22,10 @@
 #define BLOCK_SIZE      32
 #define RESIZE_SIZE     96
 #define THRESHOLD       20
+#define RANSAC_LIMIT   3.0
 #define PATCH_RADIUS    15
 #define ORB_PADDING     22
-
+#define RANSAC_LOOPS  2000
 // all credits to @tsoding aka. the C dynamic array guy.
 // https://github.com/tsoding/nob.h/blob/main/nob.h
 /**
@@ -59,18 +60,25 @@
 	} while (0)
 
 #define da_reserve(da, expected_capacity) \
-	do { \
-		if ((expected_capacity) > (da)->capacity) { \
-			if ((da)->capacity == 0) { \
-				(da)->capacity = DA_INIT_CAP; \
-			} \
-			while ((expected_capacity) > (da)->capacity) { \
-				(da)->capacity *= 2; \
-			} \
-			(da)->items = DECLTYPE_CAST((da)->items)REALLOC((da)->items, (da)->capacity * sizeof(*(da)->items)); \
-			ASSERT((da)->items != NULL && "Buy more RAM lol"); \
-		} \
-	} while (0)
+    do { \
+        if ((expected_capacity) > (da)->capacity) { \
+            if ((da)->capacity == 0) { \
+                (da)->capacity = DA_INIT_CAP; \
+            } \
+            while ((expected_capacity) > (da)->capacity) { \
+                (da)->capacity *= 2; \
+            } \
+            (da)->items = DECLTYPE_CAST((da)->items)REALLOC((da)->items, (da)->capacity * sizeof(*(da)->items)); \
+            ASSERT((da)->items != NULL && "Buy more RAM lol"); \
+        } \
+    } while (0)
+
+#define da_remove_unordered(da, i)               \
+    do {                                             \
+        size_t j = (i);                              \
+        ASSERT(j < (da)->count);                 \
+        (da)->items[j] = (da)->items[--(da)->count]; \
+    } while(0)
 // End credits.
 
 typedef struct {
@@ -122,10 +130,13 @@ uint64_t calculate_dct(Image *image);
 char *name_extension(char *filename, char *ext);
 void orb_faster(Image *image, Keypoints *keypoints);
 uint64_t hamming_orb(uint64_t *hash1, uint64_t *hash2);
-void orb_matcher(Keypoints *k1, Keypoints *k2, Matches *matches);
+void orb_matcher(Matches *matches, Keypoints *k1, Keypoints *k2);
 void draw_matches(Image *img1, Image *img2, Keypoints *k1, Keypoints *k2, Matches *matches);
 void draw_line(Image *canvas, int x0, int y0, int x1, int y1, uint8_t r, uint8_t g, uint8_t b);
-void project_point(int matrix[3][3], int x, int y, Point *p);
+void project_point(double matrix[3][3], int x, int y, Point *p);
+void calculate_homography(double matrix[3][3], uint32_t indices[4], Keypoints *k1, Keypoints *k2, Matches *matches);
+void ransac(Matches *matches, Keypoints *k1, Keypoints *k2);
+void setup_gaussian_elimination(double a[8][8], uint32_t indices[4], double b[8],Keypoints *k1, Keypoints *k2, Matches *matches);
 
 int main(int argc, char **argv) {
 
@@ -170,8 +181,9 @@ int main(int argc, char **argv) {
 		fprintf(stderr, "Failed to allocate memory for Matches\n");
 		return 1;
 	}
+    	orb_matcher(m, k1, k2);
 
-	orb_matcher(k1, k2, m);
+    	ransac(m, k1, k2);
 
 	draw_matches(&image_1, &image_2, k1, k2, m);
 
@@ -502,7 +514,7 @@ uint64_t hamming_orb(uint64_t *hash1, uint64_t *hash2) {
 	return count;
 }
 
-void orb_matcher(Keypoints *k1, Keypoints *k2, Matches *matches) {
+void orb_matcher(Matches *matches, Keypoints *k1, Keypoints *k2) {
 
 	uint64_t lowest_distance = 300;
 	uint64_t second_lowest_distance = 300;
@@ -645,30 +657,166 @@ void is_mirrored(Image *img1, Image *img2) {
 	return;
 }
 
-void project_point(int matrix[3][3], int x, int y, Point *p) {
-	int new_x = (matrix[0][0] * x) + (matrix[0][1] * y) + matrix[0][2];
-	int new_y = (matrix[1][0] * x) + (matrix[1][1] * y) + matrix[1][2];
-	int w     = (matrix[2][0] * x) + (matrix[2][1] * y) + matrix[2][2];
-	p->x = (int)(new_x / w);
-	p->y = (int)(new_y / w);
+void project_point(double matrix[3][3], int x, int y, Point *p) {
+    double new_x = (matrix[0][0] * (double)x) + (matrix[0][1] * (double)y) + matrix[0][2];
+    double new_y = (matrix[1][0] * (double)x) + (matrix[1][1] * (double)y) + matrix[1][2];
+    double w     = (matrix[2][0] * (double)x) + (matrix[2][1] * (double)y) + matrix[2][2];
+    if (w == 0) w = 1e-8;
+    p->x = (int)(new_x / w);
+    p->y = (int)(new_y / w);
 }
 
-uint32_t *unique_samples(uint32_t max_index) {
-	uint32_t* ind = calloc(4, sizeof(uint32_t));
-
+void unique_samples(uint32_t indices[4], size_t max_index) {
 	uint8_t count = 0;
-
 
 	while(count < 4) {
 		uint32_t n = 0;
+		uint8_t duplicate = 0;
 		n += arc4random_uniform(max_index);
-		for (uint8_t i = 0; i < 4; i++) {
-			if (ind[i] != n ) {
-				ind[count] = n;
-				count++;
+		for (uint8_t i = 0; i < count; i++) {
+			if (indices[i] == n ) {
+				duplicate = 1;
 			}
 		}
-	}
 
-	return ind;
+		if (!duplicate) {
+			indices[count] = n;
+			count++;
+		}
+	}
+}
+
+void ransac(Matches *matches, Keypoints *k1, Keypoints *k2) {
+    if (matches->count < 4) {
+        printf("\x1b[1;31mNot enough matches to compute Homography.\x1b[0m\n");
+        return; 
+    }
+
+    double best_matrix[3][3] = {0};
+    uint64_t votes = 0;
+    for (size_t i = 0; i < RANSAC_LOOPS; ++i) {
+        uint32_t unique_matches[4] = {0};
+        unique_samples(unique_matches, matches->count);
+        double matrix[3][3] = {0};
+        calculate_homography(matrix, unique_matches, k1, k2, matches);
+        uint64_t vote = 0;
+        for (size_t j = 0; j < matches->count; ++j) {
+            double a_x = (double)k1->items[matches->items[j].query_idx].x;
+            double a_y = (double)k1->items[matches->items[j].query_idx].y;
+            double t_x = (double)k2->items[matches->items[j].train_idx].x;
+            double t_y = (double)k2->items[matches->items[j].train_idx].y;
+            Point p = {0};
+            project_point(matrix, a_x, a_y, &p);
+            double distance_error = sqrt(((t_x - (double)p.x) * (t_x - (double)p.x)) + ((t_y - (double)p.y) * (t_y - (double)p.y)));
+
+            if (distance_error < RANSAC_LIMIT) vote++;
+        }
+
+        if (vote > votes) {
+            votes = vote;
+            memcpy(best_matrix, &matrix, sizeof(double) * 9);
+        }
+
+   }
+
+    Matches inliers = {0};
+
+    for (size_t j = 0; j < matches->count; ++j) {
+        size_t a_x = (double)k1->items[matches->items[j].query_idx].x;
+        size_t a_y = (double)k1->items[matches->items[j].query_idx].y;
+        size_t t_x = (double)k2->items[matches->items[j].train_idx].x;
+        size_t t_y = (double)k2->items[matches->items[j].train_idx].y;
+        Point p = {0};
+        project_point(best_matrix, a_x, a_y, &p);
+
+        double error = sqrt(((t_x - (double)p.x) * (t_x - (double)p.x)) + ((t_y - (double)p.y) * (t_y - (double)p.y)));
+
+        if (error < RANSAC_LIMIT) da_append(&inliers, matches->items[j]);
+    }
+
+    free(matches->items);
+
+    matches->items    = inliers.items;
+    matches->capacity = inliers.capacity;
+    matches->count    = inliers.count;
+
+}
+
+void calculate_homography(double matrix[3][3], uint32_t indices[4], Keypoints *k1, Keypoints *k2, Matches *matches) {
+    double a[8][8] = {0};
+    double b[8]    = {0};
+    double x[8]    = {0};
+
+    setup_gaussian_elimination(a, indices, b, k1, k2, matches);
+    
+    for (uint8_t pivot = 0; pivot < 8; ++pivot) {
+        double max_value = fabs(a[pivot][pivot]);
+        uint8_t index = pivot;
+        for(uint8_t j = pivot; j < 8; j++) {
+            if (fabs(a[j][pivot]) > max_value) {
+                max_value = fabs(a[j][pivot]);
+                index = j;
+            }
+        }
+        double temp = b[pivot];
+        b[pivot] = b[index];
+        b[index] = temp;
+
+        for (uint8_t i = 0; i < 8; ++i) {
+            double temp = a[pivot][i];
+            a[pivot][i] = a[index][i];
+            a[index][i] = temp;
+        }
+
+        for(uint8_t row = pivot + 1; row < 8; ++row) {
+            double factor = a[row][pivot] / a[pivot][pivot];
+            for(uint8_t col = pivot; col < 8; ++col) {
+                a[row][col] = a[row][col] - (factor * a[pivot][col]);
+            }
+            b[row] = b[row] - (factor * b[pivot]);
+        }
+    }
+
+    for(int8_t row = 7; row >= 0; --row) {
+        double sum = 0;
+        for(uint8_t col = row + 1; col < 8; ++col) {
+            sum += (a[row][col] * x[col]);
+        }
+        x[row] = (b[row] - sum) / a[row][row];
+    }
+
+     matrix[0][0] = x[0];
+     matrix[0][1] = x[1];
+     matrix[0][2] = x[2];
+     matrix[1][0] = x[3];
+     matrix[1][1] = x[4];
+     matrix[1][2] = x[5];
+     matrix[2][0] = x[6];
+     matrix[2][1] = x[7];
+     matrix[2][2] = 1.0;
+
+
+    return;
+}
+
+void setup_gaussian_elimination(double a[8][8], uint32_t indices[4], double b[8],Keypoints *k1, Keypoints *k2, Matches *matches) {
+    for (int k = 0; k < 4; k++) {
+        double x  = (double)k1->items[matches->items[indices[k]].query_idx].x;
+        double y  = (double)k1->items[matches->items[indices[k]].query_idx].y;
+        double tx = (double)k2->items[matches->items[indices[k]].train_idx].x;
+        double ty = (double)k2->items[matches->items[indices[k]].train_idx].y;
+
+        int r1 = k * 2;
+        int r2 = (k * 2) + 1;
+
+        a[r1][0] = -x;    a[r1][1] = -y;    a[r1][2] = -1.0; 
+        a[r1][3] = 0.0;   a[r1][4] = 0.0;   a[r1][5] = 0.0;
+        a[r1][6] = x*tx;  a[r1][7] = y*tx;
+        b[r1] = -tx;
+
+        a[r2][0] = 0.0;   a[r2][1] = 0.0;   a[r2][2] = 0.0; 
+        a[r2][3] = -x;    a[r2][4] = -y;    a[r2][5] = -1.0;
+        a[r2][6] = x*ty;  a[r2][7] = y*ty;
+        b[r2] = -ty;
+    }
 }
