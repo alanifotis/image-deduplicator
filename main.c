@@ -632,7 +632,7 @@ void draw_line(Image *canvas, int x0, int y0, int x1, int y1, uint8_t r, uint8_t
 
 void is_mirrored(Image *img1, Image *img2) {
 	if (img1->height != img2->height || img1->width != img2->width) {
-		printf("\x1b[1;31mProbably not a mirrored duplicate as dimensions do not match!\x1b[0m\n");
+		printf("\x1b[1;33mProbably not a mirrored duplicate as dimensions do not match!\x1b[0m\nImage 1 dimensions: W: %d H:%d\tImage 2 dimensions: W: %d H:%d\n", img1->width, img1->height, img2->width, img2->height);
 		return;
 	}
 
@@ -763,7 +763,7 @@ void calculate_homography(double matrix[3][3], uint32_t indices[4], Keypoints *k
         b[index] = temp;
 
         for (uint8_t i = 0; i < 8; ++i) {
-            double temp = a[pivot][i];
+            temp = a[pivot][i];
             a[pivot][i] = a[index][i];
             a[index][i] = temp;
         }
