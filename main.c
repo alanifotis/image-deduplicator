@@ -1,4 +1,12 @@
-#include <stddef.h>
+#if defined(_WIN32)
+	#include <windows.h>
+	#include <bcrypt.h>
+	#define M_PI          3.14159265358979323846
+	#if defined(_MSC_VER)
+    	#include <intrin.h>
+	#endif
+	#pragma comment(lib, "bcrypt.lib")
+#endif
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -18,7 +26,7 @@
 #define R_C(r) ((r) * 0.299)
 #define G_C(g) ((g) * 0.587)
 #define B_C(b) ((b) * 0.114)
-#define MATCH_THRESHOLD(x) ((x) * 0.90)
+#define MATCH_THRESHOLD(x) ((x) * 0.8)
 #define BLOCK_SIZE      32
 #define RESIZE_SIZE     96
 #define THRESHOLD       20
@@ -137,6 +145,9 @@ void project_point(double matrix[3][3], int x, int y, Point *p);
 void calculate_homography(double matrix[3][3], uint32_t indices[4], Keypoints *k1, Keypoints *k2, Matches *matches);
 void ransac(Matches *matches, Keypoints *k1, Keypoints *k2);
 void setup_gaussian_elimination(double a[8][8], uint32_t indices[4], double b[8],Keypoints *k1, Keypoints *k2, Matches *matches);
+#if defined(_WIN32)
+uint32_t generate_random(uint32_t min, size_t max);
+#endif
 
 int main(int argc, char **argv) {
 
@@ -302,9 +313,12 @@ uint64_t calculate_dct(Image *image) {
 }
 
 int hamming_distance(uint64_t hash1, uint64_t hash2) {
-	uint64_t xor_result = hash1 ^ hash2;
-	int count = __builtin_popcountll(xor_result);	
-	return count;
+
+	#if defined(_MSC_VER)
+        return (int)__popcnt64(hash1 ^ hash2);
+    #else
+        return __builtin_popcountll(hash1 ^ hash2);
+    #endif
 }
 
 char *name_extension(char *filename, char *ext) {
@@ -508,8 +522,11 @@ void orb_faster(Image *image, Keypoints *keypoints) {
 uint64_t hamming_orb(uint64_t *hash1, uint64_t *hash2) {
 	uint64_t count = 0;
 	for (int i = 0; i < 4; i++) {
-		uint64_t xor_result = hash1[i] ^ hash2[i];
-		count += __builtin_popcountll(xor_result);
+		#if defined(_MSC_VER)
+        	count +=  (int)__popcnt64(hash1[i] ^ hash2[i]);
+		#else
+			count +=  __builtin_popcountll(hash1[i] ^ hash2[i]);
+		#endif
 	}
 	return count;
 }
@@ -672,7 +689,12 @@ void unique_samples(uint32_t indices[4], size_t max_index) {
 	while(count < 4) {
 		uint32_t n = 0;
 		uint8_t duplicate = 0;
-		n += arc4random_uniform(max_index);
+		#if defined(_WIN32)
+			n += generate_random(n, max_index);
+		#else
+			n += arc4random_uniform(max_index);	
+		#endif
+		
 		for (uint8_t i = 0; i < count; i++) {
 			if (indices[i] == n ) {
 				duplicate = 1;
@@ -820,3 +842,22 @@ void setup_gaussian_elimination(double a[8][8], uint32_t indices[4], double b[8]
         b[r2] = -ty;
     }
 }
+
+#if defined(_WIN32)
+
+uint32_t generate_random(uint32_t min, size_t max) {
+    uint32_t range = max - min + 1;
+    uint32_t val;
+
+    uint32_t reject_limit = (-range) % range;
+
+    while (1) {
+        BCryptGenRandom(NULL, (PUCHAR)&val, sizeof(val), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+
+        if (val >= reject_limit) {
+            return min + (val % range);
+        }
+    }
+}
+	
+#endif
