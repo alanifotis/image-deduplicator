@@ -217,7 +217,7 @@ int main(int argc, char **argv) {
 	resize_32(&image_2, image_2_hashes);
 	uint64_t hash_s = calculate_dct(&image_2);
 	int distance = hamming_distance(hash_l, hash_s);
-	printf("Hash image_1 = %lu\nHash Screenshot = %lu\nand the Distance = %d\n", hash_l, hash_s, distance); 
+	printf("Hash image_1 = %llu\nHash Screenshot = %llu\nand the Distance = %d\n", hash_l, hash_s, distance); 
 	int matrix = matrix_neighbor_check(image_1_hashes, image_2_hashes);
 
 	printf("\x1b[1;32mFinal matrix result = %d\x1b[0m\n", matrix); 

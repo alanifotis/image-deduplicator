@@ -25,8 +25,8 @@ gcc main.c orb_pattern.c -o image_deduplicator -lm
 
 ### Windows (`cl`)
 
-```cmd
-cl main.c orb_pattern.c -o image_deduplicator
+```powershell
+cl main.c orb_pattern.c /Fe:image_deduplicator.exe
 ```
 
 ## Usage
@@ -39,6 +39,18 @@ cl main.c orb_pattern.c -o image_deduplicator
 
 ### Windows (`cl`)
 
-```cmd
+```powershell
 image_deduplicator.exe image1.png image2.png
+```
+
+## Recommended Speed Up
+
+# Linux / WSL (GCC / Clang)#
+```bash
+gcc -O3 -march=native -flto main.c orb_pattern.c -o image_deduplicator -lm
+```
+
+# Windows (MSVC)
+```powershell
+cl /O2 /Oi /GL main.c orb_pattern.c /Fe:image_deduplicator.exe
 ```
